@@ -1,13 +1,24 @@
-   name: build
-   on: [push, workflow_dispatch]
-   jobs:
-     build:
-       runs-on: macos-latest
-       steps:
-         - uses: actions/checkout@v4
-         - uses: Randomblock1/theos-action@v1
-         - run: make package FINALPACKAGE=1
-         - uses: actions/upload-artifact@v4
-           with:
-             name: Treble-deb
-             path: packages/*.deb
+name: build
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Theos
+        run: |
+          brew install ldid dpkg
+          git clone --recursive --depth 1 https://github.com/theos/theos.git $HOME/theos
+          rm -rf $HOME/theos/sdks
+          git clone --depth 1 https://github.com/theos/sdks.git $HOME/theos/sdks
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+          ls $HOME/theos/sdks
+      - name: Build
+        run: |
+          SDK=$(ls $THEOS/sdks | sed -n 's/^iPhoneOS\([0-9.]*\)\.sdk$/\1/p' | sort -V | head -1)
+          echo "Using SDK $SDK"
+          make package FINALPACKAGE=1 TARGET=iphone:clang:$SDK:6.0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Treble-deb
+          path: packages/*.deb
