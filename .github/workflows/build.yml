@@ -5,6 +5,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Make icons
+        run: |
+          mkdir -p Resources
+          python3 -c "import base64;open('Resources/icon.png','wb').write(base64.b64decode(open('icon57.b64').read()))"
+          python3 -c "import base64;open('Resources/icon@2x.png','wb').write(base64.b64decode(open('icon114.b64').read()))"
+          ls -la Resources
       - name: Install Theos
         run: |
           brew install ldid dpkg
