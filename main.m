@@ -4,7 +4,7 @@
 #import "TBPlayer.h"
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
-@property UIWindow *window;
+@property (strong, nonatomic) UIWindow *window;
 @end
 @implementation AppDelegate
 - (BOOL)application:(UIApplication *)a didFinishLaunchingWithOptions:(NSDictionary *)o {
