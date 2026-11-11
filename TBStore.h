@@ -10,6 +10,7 @@ NSArray *TBPresetGains(NSString *name);
 @property NSMutableDictionary *queue;   // {ids:[...]}
 @property NSMutableDictionary *plays;   // id -> count
 @property NSMutableArray *recent;
+@property NSMutableArray *searches;
 @property double secs;
 @property int impMode;                  // 0 = folders become playlists, 1 = songs only
 @property NSString *impKind;            // music / podcast / book

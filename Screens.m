@@ -8,6 +8,8 @@
 
 static NSArray *KINDS(void) { return @[@"all", @"music", @"podcast", @"book"]; }
 static NSString *PlName(NSDictionary *p) { return [p[@"name"] length] ? p[@"name"] : @"Untitled Playlist"; }
+static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFormat:@"%d:%02d", t / 60, t % 60]; }
+static UIColor *Blue(void) { return [UIColor colorWithRed:.3 green:.65 blue:1 alpha:1]; }
 
 #pragma mark helpers
 void TBToast(NSString *m) {
@@ -38,9 +40,71 @@ static void Sheet(NSString *t, NSArray *b, void (^h)(NSInteger)) {
     [a showInView:[UIApplication sharedApplication].keyWindow];
 }
 
+// ---- drawn glyphs (no text / emoji) ----
+static void Tri(CGContextRef c, float a, float b, float d, float e, float f, float g) {
+    CGContextMoveToPoint(c, a, b); CGContextAddLineToPoint(c, d, e); CGContextAddLineToPoint(c, f, g); CGContextClosePath(c); CGContextFillPath(c);
+}
+// kinds: 0 prev 1 next 2 play 3 pause 4 shuffle 5 repeat 6 repeat-one 7 queue 8 chevron-down 9 X
+static UIImage *Glyph(int k, CGFloat s, UIColor *col) {
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(s, s), NO, 0);
+    CGContextRef c = UIGraphicsGetCurrentContext();
+    CGContextScaleCTM(c, s / 28.0, s / 28.0);
+    [col setFill]; [col setStroke];
+    CGContextSetLineWidth(c, 2.6); CGContextSetLineCap(c, kCGLineCapRound); CGContextSetLineJoin(c, kCGLineJoinRound);
+    switch (k) {
+        case 0: CGContextFillRect(c, CGRectMake(3, 5, 4, 18)); Tri(c, 25, 5, 25, 23, 9, 14); break;
+        case 1: Tri(c, 3, 5, 3, 23, 19, 14); CGContextFillRect(c, CGRectMake(21, 5, 4, 18)); break;
+        case 2: Tri(c, 7, 3, 7, 25, 25, 14); break;
+        case 3: CGContextFillRect(c, CGRectMake(6, 4, 6, 20)); CGContextFillRect(c, CGRectMake(16, 4, 6, 20)); break;
+        case 4:
+            CGContextMoveToPoint(c, 3, 8); CGContextAddLineToPoint(c, 10, 8); CGContextAddLineToPoint(c, 18, 20); CGContextAddLineToPoint(c, 21, 20); CGContextStrokePath(c); Tri(c, 21, 16, 21, 24, 26, 20);
+            CGContextMoveToPoint(c, 3, 20); CGContextAddLineToPoint(c, 10, 20); CGContextAddLineToPoint(c, 18, 8); CGContextAddLineToPoint(c, 21, 8); CGContextStrokePath(c); Tri(c, 21, 4, 21, 12, 26, 8);
+            break;
+        case 5: case 6:
+            CGContextMoveToPoint(c, 4, 13); CGContextAddLineToPoint(c, 4, 8); CGContextAddLineToPoint(c, 19, 8); CGContextStrokePath(c); Tri(c, 19, 4, 19, 12, 25, 8);
+            CGContextMoveToPoint(c, 24, 15); CGContextAddLineToPoint(c, 24, 20); CGContextAddLineToPoint(c, 9, 20); CGContextStrokePath(c); Tri(c, 9, 16, 9, 24, 3, 20);
+            if (k == 6) [@"1" drawInRect:CGRectMake(10, 8.5, 8, 11) withFont:[UIFont boldSystemFontOfSize:10] lineBreakMode:NSLineBreakByClipping alignment:NSTextAlignmentCenter];
+            break;
+        case 7:
+            CGContextMoveToPoint(c, 3, 6); CGContextAddLineToPoint(c, 25, 6); CGContextMoveToPoint(c, 3, 13); CGContextAddLineToPoint(c, 25, 13);
+            CGContextMoveToPoint(c, 3, 20); CGContextAddLineToPoint(c, 13, 20); CGContextStrokePath(c); Tri(c, 16, 16, 16, 25, 25, 20.5); break;
+        case 8: CGContextMoveToPoint(c, 5, 10); CGContextAddLineToPoint(c, 14, 19); CGContextAddLineToPoint(c, 23, 10); CGContextStrokePath(c); break;
+        default: CGContextMoveToPoint(c, 7, 7); CGContextAddLineToPoint(c, 21, 21); CGContextMoveToPoint(c, 21, 7); CGContextAddLineToPoint(c, 7, 21); CGContextStrokePath(c); break;
+    }
+    UIImage *im = UIGraphicsGetImageFromCurrentImageContext(); UIGraphicsEndImageContext(); return im;
+}
+static UIImage *PlayImg(BOOL playing, CGFloat s) {
+    UIImage *g = Glyph(playing ? 3 : 2, s * .5, [UIColor whiteColor]);
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(s, s), NO, 0);
+    CGContextRef c = UIGraphicsGetCurrentContext(); [[UIColor whiteColor] setStroke]; CGContextSetLineWidth(c, 2.5);
+    CGContextStrokeEllipseInRect(c, CGRectMake(2, 2, s - 4, s - 4));
+    [g drawInRect:CGRectMake(s * .25 + (playing ? 0 : 2), s * .25, s * .5, s * .5)];
+    UIImage *im = UIGraphicsGetImageFromCurrentImageContext(); UIGraphicsEndImageContext(); return im;
+}
+
+static void SpeedSheet(NSString *sid) {
+    NSDictionary *s = [ST song:sid]; if (!s) return;
+    float cur = [s[@"rate"] floatValue]; if (cur < .5) cur = 1;
+    NSArray *v = @[@0.5, @0.75, @0.9, @1.0, @1.1, @1.25, @1.5, @1.75, @2.0]; NSMutableArray *t = [NSMutableArray array];
+    for (NSNumber *n in v) [t addObject:[NSString stringWithFormat:@"%@%.2f×", fabsf([n floatValue] - cur) < .01 ? @"● " : @"", [n floatValue]]];
+    [t addObject:ST.keepPitch ? @"Keep Pitch: ON (tap to turn off)" : @"Keep Pitch: OFF (tap to turn on)"];
+    Sheet([NSString stringWithFormat:@"Speed for this song: %@", s[@"title"]], t, ^(NSInteger i) {
+        if (i < (NSInteger)v.count) [PL setSpeed:[v[i] floatValue] forSong:sid];
+        else { ST.keepPitch = !ST.keepPitch; [ST save]; [PL applyRate]; }
+    });
+}
+static void SleepSheet(void) {
+    Sheet(@"Sleep Timer", @[@"Off", @"15 minutes", @"30 minutes", @"45 minutes", @"60 minutes", @"90 minutes"], ^(NSInteger i) {
+        int m[] = {0, 15, 30, 45, 60, 90}; [PL setSleepMinutes:m[i]]; TBToast(i ? @"Sleep timer set" : @"Sleep timer off");
+        [[NSNotificationCenter defaultCenter] postNotificationName:TBChanged object:nil];
+    });
+}
+
 static void SongMenu(NSString *sid) {
     NSDictionary *s = [ST song:sid]; if (!s) return;
+    float r = [s[@"rate"] floatValue]; if (r < .5) r = 1;
     Sheet(s[@"title"], @[@"Play Next", @"Add to Queue", @"Add to Playlist…",
+        [NSString stringWithFormat:@"Playback Speed: %.2f×…", r],
         [NSString stringWithFormat:@"Type: %@ (tap to change)", s[@"kind"]], @"Delete Song File"], ^(NSInteger i) {
         NSMutableDictionary *m = ST.songs[sid];
         if (i == 0) { [PL enqueue:sid atFront:YES]; TBToast(@"Playing next"); }
@@ -54,31 +118,31 @@ static void SongMenu(NSString *sid) {
                 [[NSNotificationCenter defaultCenter] postNotificationName:TBChanged object:nil];
             });
         }
-        else if (i == 3) {
+        else if (i == 3) SpeedSheet(sid);
+        else if (i == 4) {
             NSArray *k = @[@"music", @"podcast", @"book"];
             m[@"kind"] = k[([k indexOfObject:m[@"kind"]] + 1) % 3]; [ST save];
             [[NSNotificationCenter defaultCenter] postNotificationName:TBChanged object:nil];
         }
-        else if (i == 4) { if ([PL.curId isEqual:sid] && PL.playing) [PL toggle]; [ST deleteSong:sid]; }
+        else if (i == 5) { if ([PL.curId isEqual:sid] && PL.playing) [PL toggle]; [ST deleteSong:sid]; }
     });
 }
 
-static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFormat:@"%d:%02d", t / 60, t % 60]; }
-
 #pragma mark base
 @class NowPlayingVC, DetailsVC, SongsVC;
-@interface TBBase : UITableViewController {
-    UISegmentedControl *_seg;
+@interface TBBase : UITableViewController <UIGestureRecognizerDelegate> {
+    UISegmentedControl *_seg; UIView *_swBg; UITableViewCell *_swCell; NSString *_swSid;
 }
 @property BOOL wantsKind;
 - (NSString *)songIdAtIndexPath:(NSIndexPath *)ip;
 - (UITableViewCell *)songCell:(NSString *)sid;
 - (UITableViewCell *)plCell:(NSDictionary *)p;
 - (void)refresh;
+- (void)fixInset;
 @end
 
 @interface NowPlayingVC : UIViewController {
-    UIImageView *_art; UILabel *_t, *_a, *_el, *_rm, *_rv; UISlider *_seek, *_spd; UIButton *_pp, *_sh, *_rp, *_kp; NSTimer *_tm;
+    UIImageView *_art; UILabel *_t, *_a, *_al, *_el, *_rm; UISlider *_seek; UIButton *_pp, *_sh, *_rp, *_spd; NSTimer *_tm;
 }
 @end
 
@@ -88,10 +152,9 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
     [super viewDidLoad];
     self.tableView.rowHeight = 60;
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refresh) name:TBChanged object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refresh) name:TBPlayerChanged object:nil];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Playing" style:UIBarButtonItemStyleBordered target:self action:@selector(openNP)];
-    UISwipeGestureRecognizer *g = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(swipe:)];
-    g.direction = UISwipeGestureRecognizerDirectionRight; [self.tableView addGestureRecognizer:g];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playerChanged) name:TBPlayerChanged object:nil];
+    UIPanGestureRecognizer *p = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(pan:)];
+    p.delegate = self; [self.tableView addGestureRecognizer:p];
     if (self.wantsKind) {
         _seg = [[UISegmentedControl alloc] initWithItems:@[@"All", @"Music", @"Podcasts", @"Audiobooks"]];
         _seg.segmentedControlStyle = UISegmentedControlStyleBar;
@@ -101,18 +164,45 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
         self.tableView.tableHeaderView = h;
     }
 }
-- (void)viewWillAppear:(BOOL)a { [super viewWillAppear:a]; _seg.selectedSegmentIndex = [KINDS() indexOfObject:ST.kind]; [self refresh]; }
+- (void)viewWillAppear:(BOOL)a { [super viewWillAppear:a]; _seg.selectedSegmentIndex = [KINDS() indexOfObject:ST.kind]; [self fixInset]; [self refresh]; }
+- (void)fixInset { UIEdgeInsets e = UIEdgeInsetsMake(0, 0, PL.curId ? 44 : 0, 0); self.tableView.contentInset = e; self.tableView.scrollIndicatorInsets = e; }
+- (void)playerChanged { [self fixInset]; if (self.tableView.editing) return; [self refresh]; }
 - (void)kindChanged:(UISegmentedControl *)s { ST.kind = KINDS()[s.selectedSegmentIndex]; [self refresh]; }
 - (void)refresh { [self.tableView reloadData]; }
-- (void)openNP {
-    if (!PL.curId) { TBToast(@"Nothing playing"); return; }
-    [self presentViewController:[NowPlayingVC new] animated:YES completion:nil];
-}
 - (NSString *)songIdAtIndexPath:(NSIndexPath *)ip { return nil; }
-- (void)swipe:(UISwipeGestureRecognizer *)g {
-    NSIndexPath *ip = [self.tableView indexPathForRowAtPoint:[g locationInView:self.tableView]];
-    NSString *sid = ip ? [self songIdAtIndexPath:ip] : nil;
-    if (sid) { [PL enqueue:sid atFront:NO]; TBToast([NSString stringWithFormat:@"Queued: %@", [ST song:sid][@"title"]]); }
+
+// swipe right = add to queue, with the row following your finger
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {
+    if (![g isKindOfClass:[UIPanGestureRecognizer class]] || self.tableView.editing) return NO;
+    UIPanGestureRecognizer *p = (UIPanGestureRecognizer *)g; CGPoint v = [p velocityInView:self.tableView];
+    if (v.x <= 0 || fabs(v.x) < fabs(v.y) * 1.5) return NO;
+    NSIndexPath *ip = [self.tableView indexPathForRowAtPoint:[p locationInView:self.tableView]];
+    return ip && [self songIdAtIndexPath:ip] != nil;
+}
+- (void)pan:(UIPanGestureRecognizer *)p {
+    UITableView *tv = self.tableView; CGFloat dx = [p translationInView:tv].x;
+    if (p.state == UIGestureRecognizerStateBegan) {
+        NSIndexPath *ip = [tv indexPathForRowAtPoint:[p locationInView:tv]];
+        _swCell = ip ? [tv cellForRowAtIndexPath:ip] : nil; _swSid = ip ? [self songIdAtIndexPath:ip] : nil;
+        if (!_swCell) return;
+        _swBg = [[UIView alloc] initWithFrame:_swCell.frame]; _swBg.backgroundColor = [UIColor colorWithRed:.2 green:.62 blue:.3 alpha:1];
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(16, 0, 200, _swCell.frame.size.height)]; l.text = @"＋  Add to Queue"; l.textColor = [UIColor whiteColor];
+        l.font = [UIFont boldSystemFontOfSize:16]; l.backgroundColor = [UIColor clearColor]; l.tag = 77; [_swBg addSubview:l];
+        [tv insertSubview:_swBg atIndex:0];
+    } else if (p.state == UIGestureRecognizerStateChanged && _swCell) {
+        _swCell.transform = CGAffineTransformMakeTranslation(MAX(0, MIN(dx, 150)), 0);
+    } else if (_swCell && (p.state == UIGestureRecognizerStateEnded || p.state == UIGestureRecognizerStateCancelled)) {
+        UITableViewCell *c = _swCell; UIView *bg = _swBg; NSString *sid = _swSid; _swCell = nil; _swBg = nil;
+        BOOL ok = (p.state == UIGestureRecognizerStateEnded && dx > 70 && sid);
+        if (ok) {
+            [PL enqueue:sid atFront:NO]; [(UILabel *)[bg viewWithTag:77] setText:@"✓  Queued"];
+            [UIView animateWithDuration:.15 animations:^{ c.transform = CGAffineTransformMakeTranslation(190, 0); } completion:^(BOOL f) {
+                [UIView animateWithDuration:.35 delay:.1 options:UIViewAnimationOptionCurveEaseInOut animations:^{ c.transform = CGAffineTransformIdentity; } completion:^(BOOL f2) { [bg removeFromSuperview]; }];
+            }];
+        } else {
+            [UIView animateWithDuration:.2 animations:^{ c.transform = CGAffineTransformIdentity; } completion:^(BOOL f) { [bg removeFromSuperview]; }];
+        }
+    }
 }
 - (UITableViewCell *)songCell:(NSString *)sid {
     UITableViewCell *c = [self.tableView dequeueReusableCellWithIdentifier:@"s"];
@@ -120,6 +210,7 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
         c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"s"];
         c.textLabel.font = [UIFont boldSystemFontOfSize:17]; c.detailTextLabel.font = [UIFont systemFontOfSize:14];
     }
+    c.transform = CGAffineTransformIdentity;
     NSDictionary *s = [ST song:sid];
     c.imageView.image = [ST thumbForSong:s];
     c.textLabel.text = s[@"title"];
@@ -216,12 +307,12 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
     d.backgroundColor = [UIColor clearColor]; d.text = [_pl[@"desc"] length] ? _pl[@"desc"] : @"No description"; [h addSubview:d];
     UILabel *c = [[UILabel alloc] initWithFrame:CGRectMake(110, 82, 200, 18)]; c.font = [UIFont systemFontOfSize:12]; c.textColor = [UIColor grayColor]; c.backgroundColor = [UIColor clearColor];
     c.text = [NSString stringWithFormat:@"%d songs", (int)[_pl[@"ids"] count]]; [h addSubview:c];
-    NSArray *t = @[@"Play", @"Shuffle", @"Add All to Queue"]; SEL s[] = {@selector(playAll), @selector(shufAll), @selector(queueAll)};
+    NSArray *t = @[@"Play", @"Shuffle", @"Add All to Queue"]; SEL sel[] = {@selector(playAll), @selector(shufAll), @selector(queueAll)};
     for (int i = 0; i < 3; i++) {
-        UIButton *b = [UIButton buttonWithType:UIButtonTypeRoundedRect]; b.frame = CGRectMake(10 + i * 100, 108, i == 2 ? 110 : 92, 30);
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeRoundedRect];
         b.frame = CGRectMake(i == 0 ? 10 : (i == 1 ? 82 : 156), 108, i == 2 ? 154 : 66, 30);
         [b setTitle:t[i] forState:UIControlStateNormal]; b.titleLabel.font = [UIFont boldSystemFontOfSize:12];
-        [b addTarget:self action:s[i] forControlEvents:UIControlEventTouchUpInside]; [h addSubview:b];
+        [b addTarget:self action:sel[i] forControlEvents:UIControlEventTouchUpInside]; [h addSubview:b];
     }
     UIButton *e = [UIButton buttonWithType:UIButtonTypeRoundedRect]; e.frame = CGRectMake(10, 142, 300, 30);
     [e setTitle:@"Edit Details (name, description, cover art)" forState:UIControlStateNormal]; e.titleLabel.font = [UIFont boldSystemFontOfSize:12];
@@ -237,15 +328,15 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return [_secs[s] count]; }
 - (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s { return _lets ? _lets[s] : nil; }
 - (NSArray *)sectionIndexTitlesForTableView:(UITableView *)tv { return _lets; }
-- (NSString *)songIdAtIndexPath:(NSIndexPath *)ip { return _secs[ip.section][ip.row]; }
+- (NSString *)songIdAtIndexPath:(NSIndexPath *)ip { return ip.section < (NSInteger)_secs.count && ip.row < (NSInteger)[_secs[ip.section] count] ? _secs[ip.section][ip.row] : nil; }
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip { return [self songCell:[self songIdAtIndexPath:ip]]; }
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
-    NSString *sid = [self songIdAtIndexPath:ip];
+    NSString *sid = [self songIdAtIndexPath:ip]; if (!sid) return;
     if (_isQueue) { [ST.queue[@"ids"] removeObject:sid]; [ST save]; }
     [PL play:sid inList:_isQueue ? @[sid] : _ids];
 }
-- (BOOL)tableView:(UITableView *)tv canEditRowAtIndexPath:(NSIndexPath *)ip { return _pl != nil; }
+- (BOOL)tableView:(UITableView *)tv canEditRowAtIndexPath:(NSIndexPath *)ip { return _pl != nil && tv.editing; }
 - (BOOL)tableView:(UITableView *)tv canMoveRowAtIndexPath:(NSIndexPath *)ip { return _pl && tv.editing; }
 - (void)tableView:(UITableView *)tv commitEditingStyle:(UITableViewCellEditingStyle)es forRowAtIndexPath:(NSIndexPath *)ip {
     [_pl[@"ids"] removeObject:[self songIdAtIndexPath:ip]]; [ST save]; [self refresh];
@@ -256,7 +347,7 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
 @end
 
 #pragma mark groups (artists / albums)
-@interface GroupsVC : TBBase { NSString *_f; NSArray *_names, *_lets, *_secs; NSDictionary *_info; }
+@interface GroupsVC : TBBase { NSString *_f; NSArray *_lets, *_secs; NSDictionary *_info; }
 - (id)initField:(NSString *)f;
 @end
 @implementation GroupsVC
@@ -300,7 +391,7 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
 }
 @end
 
-#pragma mark home / search / library / playlists / create / more
+#pragma mark home / search
 @interface HomeVC : TBBase { NSArray *_rec, *_add; } @end
 @implementation HomeVC
 - (id)init { self = [super init]; self.title = @"Home"; self.wantsKind = YES; return self; }
@@ -335,36 +426,67 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
 }
 @end
 
-@interface SearchVC : TBBase <UISearchBarDelegate> { NSArray *_s, *_p; } @end
+@interface SearchVC : TBBase <UISearchBarDelegate> { NSArray *_s, *_p; NSString *_q; UISearchBar *_bar; } @end
 @implementation SearchVC
-- (id)init { self = [super init]; self.title = @"Search"; return self; }
+- (id)init { self = [super init]; self.title = @"Search"; _q = @""; return self; }
 - (void)viewDidLoad {
     [super viewDidLoad];
-    UISearchBar *b = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, 320, 44)]; b.delegate = self; b.placeholder = @"Songs, artists, albums, playlists";
-    b.tintColor = [UIColor colorWithWhite:.7 alpha:1]; self.tableView.tableHeaderView = b;
+    _bar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, 320, 44)]; _bar.delegate = self; _bar.placeholder = @"Songs, artists, albums, playlists";
+    _bar.tintColor = [UIColor colorWithWhite:.7 alpha:1]; self.tableView.tableHeaderView = _bar;
+}
+- (void)remember:(NSString *)q {
+    q = [q stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]; if (q.length < 2) return;
+    for (NSString *x in [ST.searches copy]) if ([x caseInsensitiveCompare:q] == NSOrderedSame) [ST.searches removeObject:x];
+    [ST.searches insertObject:q atIndex:0]; while (ST.searches.count > 10) [ST.searches removeLastObject]; [ST save];
 }
 - (void)searchBar:(UISearchBar *)b textDidChange:(NSString *)q {
-    q = [q lowercaseString]; NSMutableArray *s = [NSMutableArray array], *p = [NSMutableArray array];
-    if (q.length) {
-        for (NSString *i in [ST allIds]) { NSDictionary *x = ST.songs[i]; NSString *h = [[NSString stringWithFormat:@"%@ %@ %@", x[@"title"], x[@"artist"], x[@"album"]] lowercaseString]; if ([h rangeOfString:q].location != NSNotFound) [s addObject:i]; }
-        for (NSMutableDictionary *x in ST.pls) if ([[PlName(x) lowercaseString] rangeOfString:q].location != NSNotFound) [p addObject:x];
+    _q = q ?: @""; NSString *l = [_q lowercaseString]; NSMutableArray *s = [NSMutableArray array], *p = [NSMutableArray array];
+    if (l.length) {
+        for (NSString *i in [ST allIds]) { NSDictionary *x = ST.songs[i]; NSString *h = [[NSString stringWithFormat:@"%@ %@ %@", x[@"title"], x[@"artist"], x[@"album"]] lowercaseString]; if ([h rangeOfString:l].location != NSNotFound) [s addObject:i]; }
+        for (NSMutableDictionary *x in ST.pls) if ([[PlName(x) lowercaseString] rangeOfString:l].location != NSNotFound) [p addObject:x];
     }
     _s = s; _p = p; [self.tableView reloadData];
 }
-- (void)searchBarSearchButtonClicked:(UISearchBar *)b { [b resignFirstResponder]; }
+- (void)searchBarSearchButtonClicked:(UISearchBar *)b { [self remember:_q]; [b resignFirstResponder]; [self.tableView reloadData]; }
 - (void)refresh { [self.tableView reloadData]; }
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
-- (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s { return (s == 0 ? _p.count : _s.count) ? (s == 0 ? @"Playlists" : @"Songs") : nil; }
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return s == 0 ? _p.count : _s.count; }
-- (NSString *)songIdAtIndexPath:(NSIndexPath *)ip { return ip.section == 1 ? _s[ip.row] : nil; }
-- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip { return ip.section == 0 ? [self plCell:_p[ip.row]] : [self songCell:_s[ip.row]]; }
+- (void)delRecent:(UIButton *)b { if (b.tag < (NSInteger)ST.searches.count) { [ST.searches removeObjectAtIndex:b.tag]; [ST save]; [self.tableView reloadData]; } }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return _q.length ? 2 : 1; }
+- (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s {
+    if (!_q.length) return ST.searches.count ? @"Recent Searches" : nil;
+    return (s == 0 ? _p.count : _s.count) ? (s == 0 ? @"Playlists" : @"Songs") : nil;
+}
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
+    if (!_q.length) return ST.searches.count ? ST.searches.count + 1 : 0;
+    return s == 0 ? _p.count : _s.count;
+}
+- (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip { return _q.length ? 60 : 46; }
+- (NSString *)songIdAtIndexPath:(NSIndexPath *)ip { return (_q.length && ip.section == 1) ? _s[ip.row] : nil; }
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    if (!_q.length) {
+        UITableViewCell *c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        if (ip.row < (NSInteger)ST.searches.count) {
+            c.textLabel.text = ST.searches[ip.row]; c.textLabel.font = [UIFont systemFontOfSize:17];
+            UIButton *x = [UIButton buttonWithType:UIButtonTypeCustom]; x.frame = CGRectMake(0, 0, 44, 44); x.tag = ip.row;
+            [x setImage:Glyph(9, 18, [UIColor colorWithWhite:.55 alpha:1]) forState:UIControlStateNormal]; [x addTarget:self action:@selector(delRecent:) forControlEvents:UIControlEventTouchUpInside];
+            c.accessoryView = x;
+        } else { c.textLabel.text = @"Clear All Recent Searches"; c.textLabel.textColor = [UIColor colorWithRed:.75 green:.2 blue:.2 alpha:1]; c.textLabel.textAlignment = NSTextAlignmentCenter; }
+        return c;
+    }
+    return ip.section == 0 ? [self plCell:_p[ip.row]] : [self songCell:_s[ip.row]];
+}
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
+    if (!_q.length) {
+        if (ip.row >= (NSInteger)ST.searches.count) { [ST.searches removeAllObjects]; [ST save]; [tv reloadData]; return; }
+        NSString *t = ST.searches[ip.row]; _bar.text = t; [self searchBar:_bar textDidChange:t]; [self remember:t]; return;
+    }
+    [self remember:_q]; [_bar resignFirstResponder];
     if (ip.section == 0) { NSMutableDictionary *p = _p[ip.row]; [self.navigationController pushViewController:[[SongsVC alloc] initTitle:PlName(p) src:nil pl:p letters:NO] animated:YES]; }
     else [PL play:_s[ip.row] inList:_s];
 }
 @end
 
+#pragma mark playlists / library / settings / more / create
 @interface PlaylistsVC : TBBase @end
 @implementation PlaylistsVC
 - (id)init { self = [super init]; self.title = @"Playlists"; self.wantsKind = YES; return self; }
@@ -386,6 +508,37 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
 }
 @end
 
+@interface SettingsVC : TBBase @end
+@implementation SettingsVC
+- (id)init { self = [super initWithStyle:UITableViewStyleGrouped]; self.title = @"Settings"; return self; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
+- (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s { return @[@"Playback", @"History", @"Library", @"About"][s]; }
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return [@[@2, @3, @2, @1][s] intValue]; }
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    UITableViewCell *c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
+    c.textLabel.text = @[@[@"Keep Pitch With Speed", @"Sleep Timer"], @[@"Clear Search History", @"Clear Recently Played", @"Reset Listening Stats"],
+                         @[@"Songs in Library", @"Delete Empty Playlists"], @[@"Treble 1.0 · iPod touch 4"]][ip.section][ip.row];
+    c.textLabel.font = [UIFont systemFontOfSize:16];
+    if (ip.section == 0 && ip.row == 0) { UISwitch *w = [UISwitch new]; w.on = ST.keepPitch; [w addTarget:self action:@selector(pitchSw:) forControlEvents:UIControlEventValueChanged]; c.accessoryView = w; c.selectionStyle = UITableViewCellSelectionStyleNone; }
+    else if (ip.section == 0) c.detailTextLabel.text = PL.sleepAt > 0 ? [NSString stringWithFormat:@"%d min left", (int)ceil((PL.sleepAt - [[NSDate date] timeIntervalSince1970]) / 60)] : @"Off";
+    else if (ip.section == 2 && ip.row == 0) { c.detailTextLabel.text = [NSString stringWithFormat:@"%d", (int)ST.songs.count]; c.selectionStyle = UITableViewCellSelectionStyleNone; }
+    else if (ip.section == 3) c.selectionStyle = UITableViewCellSelectionStyleNone;
+    return c;
+}
+- (void)pitchSw:(UISwitch *)w { ST.keepPitch = w.on; [ST save]; [PL applyRate]; }
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:YES];
+    if (ip.section == 0 && ip.row == 1) SleepSheet();
+    else if (ip.section == 1) {
+        if (ip.row == 0) [ST.searches removeAllObjects]; else if (ip.row == 1) [ST.recent removeAllObjects]; else { [ST.plays removeAllObjects]; ST.secs = 0; }
+        [ST save]; TBToast(@"Cleared");
+    } else if (ip.section == 2 && ip.row == 1) {
+        for (NSMutableDictionary *p in [ST.pls copy]) if (![p[@"ids"] count]) [ST.pls removeObject:p];
+        [ST save]; TBToast(@"Empty playlists deleted");
+    }
+}
+@end
+
 @interface MenuVC : TBBase { NSArray *_rows; } @end
 @implementation MenuVC
 - (id)initTitle:(NSString *)t rows:(NSArray *)r { self = [super init]; self.title = t; _rows = r; self.wantsKind = [t isEqual:@"Library"]; return self; }
@@ -395,7 +548,8 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
     if (!c) { c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"m"]; c.accessoryType = UITableViewCellAccessoryDisclosureIndicator; c.textLabel.font = [UIFont boldSystemFontOfSize:19]; }
     c.textLabel.text = _rows[ip.row]; NSString *r = _rows[ip.row];
     c.detailTextLabel.text = [r isEqual:@"Playlists"] ? [NSString stringWithFormat:@"%d", (int)ST.pls.count] : [r isEqual:@"Songs"] ? [NSString stringWithFormat:@"%d", (int)[ST allIds].count]
-        : [r isEqual:@"Queue"] ? [NSString stringWithFormat:@"%d", (int)[ST.queue[@"ids"] count]] : [r isEqual:@"Equalizer"] ? (ST.eqOn ? ST.eqPreset : @"Off") : @"";
+        : [r isEqual:@"Queue"] ? [NSString stringWithFormat:@"%d", (int)[ST.queue[@"ids"] count]] : [r isEqual:@"Equalizer"] ? (ST.eqOn ? ST.eqPreset : @"Off")
+        : [r isEqual:@"Sleep Timer"] ? (PL.sleepAt > 0 ? @"On" : @"Off") : @"";
     return c;
 }
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
@@ -406,22 +560,27 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
     else if ([r isEqual:@"Albums"]) v = [[GroupsVC alloc] initField:@"album"];
     else if ([r isEqual:@"Queue"]) v = [[SongsVC alloc] initTitle:@"Queue" src:nil pl:ST.queue letters:NO];
     else if ([r isEqual:@"Equalizer"]) v = [NSClassFromString(@"EQVC") new];
+    else if ([r isEqual:@"Settings"]) v = [SettingsVC new];
+    else if ([r isEqual:@"Sleep Timer"]) { SleepSheet(); return; }
     if (v) [self.navigationController pushViewController:v animated:YES];
 }
 @end
 
 @interface CreateVC : TBBase @end
 @implementation CreateVC
-- (id)init { self = [super init]; self.title = @"Create"; return self; }
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
-- (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s { return s == 0 ? @"Add to Library" : @"Import Settings"; }
+- (id)init { self = [super initWithStyle:UITableViewStyleGrouped]; self.title = @"Create"; return self; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
+- (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s { return @[@"Add to Library", @"Smart Playlists", @"Import Settings"][s]; }
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
-    return s == 0 ? @"Copy songs or folders to /var/mobile/Media/Treble/Inbox (SFTP, iFile, 3uTools, iFunBox), then tap Scan. A folder becomes one playlist (unnamed until you name it) when 'Folder = Playlist' is on." : nil;
+    return s == 0 ? @"Put music in Treble/Inbox on the iPod, then scan." : s == 2 ? @"Folder = Playlist makes one unnamed playlist per folder." : nil;
 }
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return s == 0 ? 2 : 2; }
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return s == 1 ? 3 : 2; }
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     UITableViewCell *c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-    if (ip.section == 0) { c.textLabel.text = ip.row == 0 ? @"Scan Inbox for New Files" : @"New Playlist"; c.accessoryType = UITableViewCellAccessoryDisclosureIndicator; return c; }
+    if (ip.section < 2) {
+        c.textLabel.text = ip.section == 0 ? (ip.row == 0 ? @"Scan Inbox for New Files" : @"New Playlist") : @[@"Most Played", @"Recently Added", @"Never Played"][ip.row];
+        c.accessoryType = UITableViewCellAccessoryDisclosureIndicator; return c;
+    }
     c.selectionStyle = UITableViewCellSelectionStyleNone;
     UISegmentedControl *s = [[UISegmentedControl alloc] initWithItems:ip.row == 0 ? @[@"Folder = Playlist", @"Songs Only"] : @[@"Music", @"Podcast", @"Audiobook"]];
     s.frame = CGRectMake(8, 7, 284, 30); s.tag = ip.row;
@@ -433,11 +592,21 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
     if (s.tag == 0) ST.impMode = (int)s.selectedSegmentIndex; else ST.impKind = @[@"music", @"podcast", @"book"][s.selectedSegmentIndex];
     [ST save];
 }
+- (void)open:(NSMutableDictionary *)p { [self.navigationController pushViewController:[[SongsVC alloc] initTitle:PlName(p) src:nil pl:p letters:NO] animated:YES]; }
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
-    if (ip.section != 0) return;
-    if (ip.row == 0) { [ST scan]; TBToast(@"Scanning…"); }
-    else { NSMutableDictionary *p = [ST newPlaylistNamed:@"" ids:nil kind:ST.impKind]; [self.navigationController pushViewController:[[SongsVC alloc] initTitle:PlName(p) src:nil pl:p letters:NO] animated:YES]; }
+    if (ip.section == 0) {
+        if (ip.row == 0) { [ST scan]; TBToast(@"Scanning…"); } else [self open:[ST newPlaylistNamed:@"" ids:nil kind:ST.impKind]];
+    } else if (ip.section == 1) {
+        NSMutableArray *ids; NSString *name = @[@"Most Played", @"Recently Added", @"Never Played"][ip.row];
+        if (ip.row == 0) {
+            NSMutableArray *a = [NSMutableArray array]; for (NSString *k in ST.plays) if (ST.songs[k] && [ST.plays[k] intValue] > 0) [a addObject:k];
+            [a sortUsingComparator:^NSComparisonResult(id x, id y) { return [ST.plays[y] compare:ST.plays[x]]; }];
+            ids = [[a subarrayWithRange:NSMakeRange(0, MIN(25, a.count))] mutableCopy];
+        } else if (ip.row == 1) { NSArray *a = [ST sorted:[ST.songs allKeys] by:@"added"]; ids = [[a subarrayWithRange:NSMakeRange(0, MIN(25, a.count))] mutableCopy]; }
+        else { ids = [NSMutableArray array]; for (NSString *k in [ST sorted:[ST.songs allKeys] by:@"title"]) if (![ST.plays[k] intValue] && ids.count < 100) [ids addObject:k]; }
+        [self open:[ST newPlaylistNamed:name ids:ids kind:@"music"]];
+    }
 }
 @end
 
@@ -446,19 +615,19 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
 @implementation EQVC
 - (void)viewDidLoad {
     [super viewDidLoad]; self.title = @"Equalizer"; self.view.backgroundColor = [UIColor groupTableViewBackgroundColor];
-    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(15, 14, 150, 27)]; l.text = @"Equalizer"; l.font = [UIFont boldSystemFontOfSize:17]; l.backgroundColor = [UIColor clearColor]; [self.view addSubview:l];
-    _sw = [[UISwitch alloc] initWithFrame:CGRectMake(225, 14, 80, 27)]; _sw.on = ST.eqOn; [_sw addTarget:self action:@selector(sw) forControlEvents:UIControlEventValueChanged]; [self.view addSubview:_sw];
-    _pb = [UIButton buttonWithType:UIButtonTypeRoundedRect]; _pb.frame = CGRectMake(15, 54, 290, 36); [_pb addTarget:self action:@selector(presets) forControlEvents:UIControlEventTouchUpInside]; [self.view addSubview:_pb];
+    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(15, 12, 150, 27)]; l.text = @"Equalizer"; l.font = [UIFont boldSystemFontOfSize:17]; l.backgroundColor = [UIColor clearColor]; [self.view addSubview:l];
+    _sw = [[UISwitch alloc] initWithFrame:CGRectMake(225, 12, 80, 27)]; _sw.on = ST.eqOn; [_sw addTarget:self action:@selector(sw) forControlEvents:UIControlEventValueChanged]; [self.view addSubview:_sw];
+    _pb = [UIButton buttonWithType:UIButtonTypeRoundedRect]; _pb.frame = CGRectMake(15, 48, 290, 34); [_pb addTarget:self action:@selector(presets) forControlEvents:UIControlEventTouchUpInside]; [self.view addSubview:_pb];
     NSArray *fq = @[@"32", @"64", @"125", @"250", @"500", @"1k", @"2k", @"4k", @"8k", @"16k"];
     for (int i = 0; i < 10; i++) {
         float x = 10 + i * 30.5;
-        _gl[i] = [[UILabel alloc] initWithFrame:CGRectMake(x, 98, 30, 16)]; _gl[i].font = [UIFont systemFontOfSize:10]; _gl[i].textAlignment = NSTextAlignmentCenter; _gl[i].backgroundColor = [UIColor clearColor]; [self.view addSubview:_gl[i]];
-        UISlider *s = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, 190, 30)]; s.minimumValue = -12; s.maximumValue = 12; s.tag = i;
-        s.transform = CGAffineTransformMakeRotation(-M_PI_2); s.center = CGPointMake(x + 15, 214);
+        _gl[i] = [[UILabel alloc] initWithFrame:CGRectMake(x, 88, 30, 16)]; _gl[i].font = [UIFont systemFontOfSize:10]; _gl[i].textAlignment = NSTextAlignmentCenter; _gl[i].backgroundColor = [UIColor clearColor]; [self.view addSubview:_gl[i]];
+        UISlider *s = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, 180, 30)]; s.minimumValue = -12; s.maximumValue = 12; s.tag = i;
+        s.transform = CGAffineTransformMakeRotation(-M_PI_2); s.center = CGPointMake(x + 15, 197);
         [s addTarget:self action:@selector(moved:) forControlEvents:UIControlEventValueChanged];
         [s addTarget:self action:@selector(done) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
         [self.view addSubview:s]; _sl[i] = s;
-        UILabel *f = [[UILabel alloc] initWithFrame:CGRectMake(x, 316, 30, 14)]; f.text = fq[i]; f.font = [UIFont systemFontOfSize:10]; f.textAlignment = NSTextAlignmentCenter; f.backgroundColor = [UIColor clearColor]; [self.view addSubview:f];
+        UILabel *f = [[UILabel alloc] initWithFrame:CGRectMake(x, 292, 30, 14)]; f.text = fq[i]; f.font = [UIFont systemFontOfSize:10]; f.textAlignment = NSTextAlignmentCenter; f.backgroundColor = [UIColor clearColor]; [self.view addSubview:f];
     }
     [self sync];
 }
@@ -507,56 +676,54 @@ static NSString *Mins(double s) { int t = (int)s; return [NSString stringWithFor
 
 #pragma mark now playing
 @implementation NowPlayingVC
-- (UIButton *)btn:(NSString *)t frame:(CGRect)f sel:(SEL)s size:(CGFloat)sz {
-    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom]; b.frame = f; [b setTitle:t forState:UIControlStateNormal];
-    b.titleLabel.font = [UIFont boldSystemFontOfSize:sz]; [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal]; [b setTitleColor:[UIColor grayColor] forState:UIControlStateHighlighted];
+- (UIButton *)ib:(UIImage *)im frame:(CGRect)f sel:(SEL)s {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom]; b.frame = f; [b setImage:im forState:UIControlStateNormal];
     [b addTarget:self action:s forControlEvents:UIControlEventTouchUpInside]; [self.view addSubview:b]; return b;
 }
-- (UILabel *)lab:(CGRect)f size:(CGFloat)sz bold:(BOOL)b align:(NSTextAlignment)a {
-    UILabel *l = [[UILabel alloc] initWithFrame:f]; l.font = b ? [UIFont boldSystemFontOfSize:sz] : [UIFont systemFontOfSize:sz]; l.textColor = b ? [UIColor whiteColor] : [UIColor lightGrayColor];
+- (UILabel *)lab:(CGRect)f size:(CGFloat)sz bold:(BOOL)b color:(UIColor *)col align:(NSTextAlignment)a {
+    UILabel *l = [[UILabel alloc] initWithFrame:f]; l.font = b ? [UIFont boldSystemFontOfSize:sz] : [UIFont systemFontOfSize:sz]; l.textColor = col;
     l.textAlignment = a; l.backgroundColor = [UIColor clearColor]; [self.view addSubview:l]; return l;
 }
 - (void)viewDidLoad {
     [super viewDidLoad]; self.view.backgroundColor = [UIColor colorWithWhite:.1 alpha:1];
-    [self btn:@"Done" frame:CGRectMake(10, 26, 70, 30) sel:@selector(close) size:16];
-    [self btn:@"Queue" frame:CGRectMake(240, 26, 70, 30) sel:@selector(showQueue) size:16];
-    _art = [[UIImageView alloc] initWithFrame:CGRectMake(70, 62, 180, 180)]; [self.view addSubview:_art];
-    _t = [self lab:CGRectMake(20, 250, 280, 24) size:18 bold:YES align:NSTextAlignmentCenter];
-    _a = [self lab:CGRectMake(20, 274, 280, 20) size:14 bold:NO align:NSTextAlignmentCenter];
-    _seek = [[UISlider alloc] initWithFrame:CGRectMake(20, 302, 280, 20)]; [_seek addTarget:self action:@selector(seeked) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside]; [self.view addSubview:_seek];
-    _el = [self lab:CGRectMake(20, 324, 60, 16) size:11 bold:NO align:NSTextAlignmentLeft];
-    _rm = [self lab:CGRectMake(240, 324, 60, 16) size:11 bold:NO align:NSTextAlignmentRight];
-    [self btn:@"◀◀" frame:CGRectMake(40, 346, 70, 44) sel:@selector(prev) size:24];
-    _pp = [self btn:@"❚❚" frame:CGRectMake(125, 346, 70, 44) sel:@selector(pp) size:28];
-    [self btn:@"▶▶" frame:CGRectMake(210, 346, 70, 44) sel:@selector(next) size:24];
-    [self lab:CGRectMake(20, 402, 50, 20) size:12 bold:NO align:NSTextAlignmentLeft].text = @"Speed";
-    _spd = [[UISlider alloc] initWithFrame:CGRectMake(68, 400, 160, 24)]; _spd.minimumValue = .5; _spd.maximumValue = 2; [_spd addTarget:self action:@selector(speed) forControlEvents:UIControlEventValueChanged]; [self.view addSubview:_spd];
-    _rv = [self lab:CGRectMake(230, 402, 44, 20) size:12 bold:NO align:NSTextAlignmentCenter];
-    [self btn:@"1×" frame:CGRectMake(276, 398, 34, 28) sel:@selector(speed1) size:14];
-    _sh = [self btn:@"Shuffle" frame:CGRectMake(10, 436, 90, 30) sel:@selector(shuf) size:13];
-    _rp = [self btn:@"Repeat" frame:CGRectMake(115, 436, 90, 30) sel:@selector(rep) size:13];
-    _kp = [self btn:@"Keep Pitch" frame:CGRectMake(220, 436, 95, 30) sel:@selector(pitch) size:13];
+    UIColor *w = [UIColor whiteColor], *g = [UIColor lightGrayColor];
+    [self ib:Glyph(8, 26, w) frame:CGRectMake(8, 4, 50, 40) sel:@selector(close)];
+    [self ib:Glyph(7, 24, w) frame:CGRectMake(262, 4, 50, 40) sel:@selector(showQueue)];
+    _art = [[UIImageView alloc] initWithFrame:CGRectMake(70, 46, 180, 180)]; _art.layer.shadowColor = [UIColor blackColor].CGColor; _art.layer.shadowOpacity = .8; _art.layer.shadowRadius = 8; [self.view addSubview:_art];
+    _t = [self lab:CGRectMake(20, 234, 280, 22) size:18 bold:YES color:w align:NSTextAlignmentCenter];
+    _a = [self lab:CGRectMake(20, 256, 280, 18) size:14 bold:NO color:g align:NSTextAlignmentCenter];
+    _al = [self lab:CGRectMake(20, 274, 280, 16) size:12 bold:NO color:[UIColor grayColor] align:NSTextAlignmentCenter];
+    _seek = [[UISlider alloc] initWithFrame:CGRectMake(20, 298, 280, 20)]; [_seek addTarget:self action:@selector(seeked) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside]; [self.view addSubview:_seek];
+    _el = [self lab:CGRectMake(20, 320, 60, 14) size:11 bold:NO color:g align:NSTextAlignmentLeft];
+    _rm = [self lab:CGRectMake(240, 320, 60, 14) size:11 bold:NO color:g align:NSTextAlignmentRight];
+    _sh = [self ib:Glyph(4, 26, g) frame:CGRectMake(12, 348, 48, 44) sel:@selector(shuf)];
+    [self ib:Glyph(0, 30, w) frame:CGRectMake(70, 348, 56, 44) sel:@selector(prev)];
+    _pp = [self ib:PlayImg(NO, 64) frame:CGRectMake(128, 338, 64, 64) sel:@selector(pp)];
+    [self ib:Glyph(1, 30, w) frame:CGRectMake(194, 348, 56, 44) sel:@selector(next)];
+    _rp = [self ib:Glyph(5, 26, g) frame:CGRectMake(260, 348, 48, 44) sel:@selector(rep)];
+    _spd = [UIButton buttonWithType:UIButtonTypeCustom]; _spd.frame = CGRectMake(110, 414, 100, 30);
+    _spd.layer.cornerRadius = 15; _spd.layer.borderWidth = 1; _spd.titleLabel.font = [UIFont boldSystemFontOfSize:14];
+    [_spd addTarget:self action:@selector(speedMenu) forControlEvents:UIControlEventTouchUpInside]; [self.view addSubview:_spd];
     [self sync]; _tm = [NSTimer scheduledTimerWithTimeInterval:.5 target:self selector:@selector(tick) userInfo:nil repeats:YES];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sync) name:TBPlayerChanged object:nil];
 }
 - (void)sync {
     NSDictionary *s = [ST song:PL.curId]; if (!s) return;
-    _art.image = [ST thumbForSong:s]; _t.text = s[@"title"]; _a.text = [NSString stringWithFormat:@"%@ — %@", s[@"artist"], s[@"album"]];
-    float r = [s[@"rate"] floatValue]; if (r < .5) r = 1; _spd.value = r; _rv.text = [NSString stringWithFormat:@"%.2f×", r];
-    [_pp setTitle:PL.playing ? @"❚❚" : @"▶" forState:UIControlStateNormal];
-    [_sh setTitleColor:PL.shuffle ? [UIColor colorWithRed:.3 green:.65 blue:1 alpha:1] : [UIColor grayColor] forState:UIControlStateNormal];
-    [_rp setTitle:PL.repeat == 2 ? @"Repeat 1" : @"Repeat" forState:UIControlStateNormal];
-    [_rp setTitleColor:PL.repeat ? [UIColor colorWithRed:.3 green:.65 blue:1 alpha:1] : [UIColor grayColor] forState:UIControlStateNormal];
-    [_kp setTitleColor:ST.keepPitch ? [UIColor colorWithRed:.3 green:.65 blue:1 alpha:1] : [UIColor grayColor] forState:UIControlStateNormal];
+    _art.image = [ST thumbForSong:s]; _t.text = s[@"title"]; _a.text = s[@"artist"]; _al.text = s[@"album"];
+    float r = [s[@"rate"] floatValue]; if (r < .5) r = 1;
+    [_spd setTitle:[NSString stringWithFormat:@"%.2f×", r] forState:UIControlStateNormal];
+    UIColor *c = fabsf(r - 1) > .001f ? Blue() : [UIColor lightGrayColor];
+    [_spd setTitleColor:c forState:UIControlStateNormal]; _spd.layer.borderColor = c.CGColor;
+    [_pp setImage:PlayImg(PL.playing, 64) forState:UIControlStateNormal];
+    [_sh setImage:Glyph(4, 26, PL.shuffle ? Blue() : [UIColor grayColor]) forState:UIControlStateNormal];
+    [_rp setImage:Glyph(PL.repeat == 2 ? 6 : 5, 26, PL.repeat ? Blue() : [UIColor grayColor]) forState:UIControlStateNormal];
 }
 - (void)tick { double d = PL.duration, p = PL.position; if (!_seek.tracking && d > 0) _seek.value = p / d; _el.text = Mins(p); _rm.text = [@"-" stringByAppendingString:Mins(MAX(0, d - p))]; }
 - (void)seeked { [PL seek:_seek.value * PL.duration]; }
-- (void)speed { float r = roundf(_spd.value * 20) / 20; _rv.text = [NSString stringWithFormat:@"%.2f×", r]; [PL setSpeed:r]; }
-- (void)speed1 { _spd.value = 1; [self speed]; }
+- (void)speedMenu { if (PL.curId) SpeedSheet(PL.curId); }
 - (void)pp { [PL toggle]; } - (void)next { [PL next]; } - (void)prev { [PL prev]; }
 - (void)shuf { PL.shuffle = !PL.shuffle; [self sync]; }
 - (void)rep { PL.repeat = (PL.repeat + 1) % 3; [self sync]; }
-- (void)pitch { ST.keepPitch = !ST.keepPitch; [ST save]; [PL applyRate]; [self sync]; }
 - (void)close { [_tm invalidate]; [self dismissViewControllerAnimated:YES completion:nil]; }
 - (void)showQueue { [self close]; [[NSNotificationCenter defaultCenter] postNotificationName:@"TBShowQueue" object:nil]; }
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
@@ -574,13 +741,48 @@ static UIImage *Icon(int k) {
     UIImage *im = UIGraphicsGetImageFromCurrentImageContext(); UIGraphicsEndImageContext(); return im;
 }
 
-@interface TBTabs : UITabBarController @end
+@interface TBTabs : UITabBarController {
+    UIView *_mini; UIImageView *_mArt; UILabel *_mT, *_mA; UIButton *_mPrev, *_mPlay, *_mNext; UIView *_mBar; CAGradientLayer *_gl; NSTimer *_mt;
+}
+@end
 @implementation TBTabs
 - (BOOL)canBecomeFirstResponder { return YES; }
+- (UIButton *)mb:(CGRect)f sel:(SEL)s { UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom]; b.frame = f; [b addTarget:self action:s forControlEvents:UIControlEventTouchUpInside]; [_mini addSubview:b]; return b; }
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    _mini = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 44)]; _mini.hidden = YES;
+    _gl = [CAGradientLayer layer]; _gl.frame = _mini.bounds;
+    _gl.colors = @[(id)[UIColor colorWithWhite:.38 alpha:1].CGColor, (id)[UIColor colorWithWhite:.13 alpha:1].CGColor]; [_mini.layer addSublayer:_gl];
+    _mArt = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 44, 44)]; [_mini addSubview:_mArt];
+    _mT = [[UILabel alloc] initWithFrame:CGRectMake(50, 5, 136, 18)]; _mT.font = [UIFont boldSystemFontOfSize:14]; _mT.textColor = [UIColor whiteColor]; _mT.backgroundColor = [UIColor clearColor]; [_mini addSubview:_mT];
+    _mA = [[UILabel alloc] initWithFrame:CGRectMake(50, 23, 136, 16)]; _mA.font = [UIFont systemFontOfSize:12]; _mA.textColor = [UIColor lightGrayColor]; _mA.backgroundColor = [UIColor clearColor]; [_mini addSubview:_mA];
+    _mPrev = [self mb:CGRectMake(188, 0, 42, 44) sel:@selector(mPrev)]; [_mPrev setImage:Glyph(0, 20, [UIColor whiteColor]) forState:UIControlStateNormal];
+    _mPlay = [self mb:CGRectMake(232, 0, 42, 44) sel:@selector(mPlay)];
+    _mNext = [self mb:CGRectMake(276, 0, 42, 44) sel:@selector(mNext)]; [_mNext setImage:Glyph(1, 20, [UIColor whiteColor]) forState:UIControlStateNormal];
+    _mBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, 2)]; _mBar.backgroundColor = Blue(); [_mini addSubview:_mBar];
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(openNP)]; [_mini addGestureRecognizer:tap];
+    [self.view addSubview:_mini];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(updMini) name:TBPlayerChanged object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(showQueue) name:@"TBShowQueue" object:nil];
+    _mt = [NSTimer scheduledTimerWithTimeInterval:.5 target:self selector:@selector(progress) userInfo:nil repeats:YES];
+    [self updMini];
+}
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    _mini.frame = CGRectMake(0, self.tabBar.frame.origin.y - 44, self.view.bounds.size.width, 44); _gl.frame = _mini.bounds;
+    [self.view bringSubviewToFront:_mini];
+}
+- (void)updMini {
+    NSDictionary *s = [ST song:PL.curId]; _mini.hidden = (s == nil); if (!s) return;
+    _mArt.image = [ST thumbForSong:s]; _mT.text = s[@"title"]; _mA.text = s[@"artist"];
+    [_mPlay setImage:Glyph(PL.playing ? 3 : 2, 22, [UIColor whiteColor]) forState:UIControlStateNormal];
+}
+- (void)progress { double d = PL.duration; _mBar.frame = CGRectMake(0, 0, d > 0 ? 320 * (PL.position / d) : 0, 2); }
+- (void)mPrev { [PL prev]; } - (void)mPlay { [PL toggle]; } - (void)mNext { [PL next]; }
+- (void)openNP { if (PL.curId && !self.presentedViewController) [self presentViewController:[NowPlayingVC new] animated:YES completion:nil]; }
 - (void)viewDidAppear:(BOOL)a {
     [super viewDidAppear:a];
     [[UIApplication sharedApplication] beginReceivingRemoteControlEvents]; [self becomeFirstResponder];
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(showQueue) name:@"TBShowQueue" object:nil];
 }
 - (void)showQueue {
     self.selectedIndex = 4; UINavigationController *n = (UINavigationController *)self.selectedViewController; [n popToRootViewControllerAnimated:NO];
@@ -608,7 +810,7 @@ void TBStyleAppearance(void) {
 UITabBarController *TBMakeTabs(void) {
     NSArray *roots = @[[HomeVC new], [SearchVC new],
         [[MenuVC alloc] initTitle:@"Library" rows:@[@"Playlists", @"Songs", @"Artists", @"Albums"]],
-        [CreateVC new], [[MenuVC alloc] initTitle:@"More" rows:@[@"Equalizer", @"Queue"]]];
+        [CreateVC new], [[MenuVC alloc] initTitle:@"More" rows:@[@"Equalizer", @"Queue", @"Sleep Timer", @"Settings"]]];
     NSArray *names = @[@"Home", @"Search", @"Library", @"Create", @"More"]; NSMutableArray *vcs = [NSMutableArray array];
     for (int i = 0; i < 5; i++) {
         UINavigationController *n = [[UINavigationController alloc] initWithRootViewController:roots[i]];

@@ -6,6 +6,7 @@ extern NSString *const TBPlayerChanged;
 @property NSArray *list;
 @property BOOL shuffle;
 @property int repeat; // 0 off, 1 all, 2 one
+@property (readonly) double sleepAt; // 0 = off
 + (TBPlayer *)shared;
 - (void)startSession;
 - (void)play:(NSString *)sid inList:(NSArray *)l;
@@ -15,7 +16,8 @@ extern NSString *const TBPlayerChanged;
 - (void)seek:(double)sec;
 - (double)position;
 - (double)duration;
-- (void)setSpeed:(float)r;      // per song, remembered
+- (void)setSpeed:(float)r forSong:(NSString *)sid;
+- (void)setSleepMinutes:(int)m;
 - (void)applyEQ;
 - (void)applyRate;
 - (void)enqueue:(NSString *)sid atFront:(BOOL)front;

@@ -51,6 +51,7 @@ NSArray *TBPresetGains(NSString *n) {
     self.queue  = [NSMutableDictionary dictionaryWithObject:(d[@"queue"] ?: [NSMutableArray array]) forKey:@"ids"];
     self.plays  = d[@"plays"]  ?: [NSMutableDictionary dictionary];
     self.recent = d[@"recent"] ?: [NSMutableArray array];
+    self.searches = d[@"searches"] ?: [NSMutableArray array];
     self.secs = [d[@"secs"] doubleValue];
     _uid = [d[@"uid"] intValue];
     self.impMode = [d[@"impMode"] intValue];
@@ -64,7 +65,7 @@ NSArray *TBPresetGains(NSString *n) {
 
 - (void)save {
     NSDictionary *d = @{@"songs":self.songs, @"pls":self.pls, @"queue":self.queue[@"ids"], @"plays":self.plays,
-        @"recent":self.recent, @"secs":@(self.secs), @"uid":@(_uid), @"impMode":@(self.impMode), @"impKind":self.impKind,
+        @"recent":self.recent, @"searches":self.searches, @"secs":@(self.secs), @"uid":@(_uid), @"impMode":@(self.impMode), @"impKind":self.impKind,
         @"eqOn":@(self.eqOn), @"keep":@(self.keepPitch), @"eqPreset":self.eqPreset, @"eqGains":self.eqGains};
     [d writeToFile:[[self dataDir] stringByAppendingPathComponent:@"state.plist"] atomically:YES];
 }
