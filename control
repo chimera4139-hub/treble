@@ -1,0 +1,9 @@
+Package: com.iulian.treble
+Name: Treble
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Music player for iPod touch 4 / iOS 6
+Maintainer: Iulian Stoica
+Author: Iulian Stoica
+Section: Multimedia
+Depends: firmware (>= 6.0)
