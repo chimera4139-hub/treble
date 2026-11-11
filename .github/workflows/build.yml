@@ -15,9 +15,17 @@ jobs:
           ls $HOME/theos/sdks
       - name: Build
         run: |
-          SDK=$(ls $THEOS/sdks | sed -n 's/^iPhoneOS\([0-9.]*\)\.sdk$/\1/p' | sort -V | head -1)
-          echo "Using SDK $SDK"
-          make package FINALPACKAGE=1 TARGET=iphone:clang:$SDK:6.0
+          OK=0
+          for SDK in $(ls $THEOS/sdks | sed -n 's/^iPhoneOS\([0-9.]*\)\.sdk$/\1/p' | sort -V); do
+            echo "=== Trying SDK $SDK ==="
+            rm -rf .theos packages
+            if make package FINALPACKAGE=1 TARGET=iphone:clang:$SDK:6.0 2>&1 | grep -v "ld: warning"; [ "${PIPESTATUS[0]}" = "0" ]; then
+              echo "=== SDK $SDK WORKED ==="
+              OK=1
+              break
+            fi
+          done
+          [ "$OK" = "1" ]
       - uses: actions/upload-artifact@v4
         with:
           name: Treble-deb
