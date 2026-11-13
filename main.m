@@ -14,8 +14,11 @@
     self.window.rootViewController = TBMakeTabs();
     [self.window makeKeyAndVisible];
     [[TBStore shared] scan];
+    [NSTimer scheduledTimerWithTimeInterval:60 target:self selector:@selector(themeTick) userInfo:nil repeats:YES];
     return YES;
 }
+- (void)themeTick { TBThemeTick(); }
+- (void)applicationDidBecomeActive:(UIApplication *)a { TBThemeTick(); }
 - (void)applicationDidEnterBackground:(UIApplication *)a { [[TBStore shared] save]; }
 - (void)applicationWillEnterForeground:(UIApplication *)a { [[TBStore shared] scan]; }
 @end

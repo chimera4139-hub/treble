@@ -15,6 +15,8 @@ NSArray *TBPresetGains(NSString *name);
 @property int impMode;                  // 0 = folders become playlists, 1 = songs only
 @property NSString *impKind;            // music / podcast / book
 @property NSString *kind;               // UI filter: all / music / podcast / book
+@property int theme;                    // 0 Old Apple, 1 Modern, 2 Spotify, 3 FM, 4 Poster
+@property int mode;                     // 0 light, 1 dark, 2 auto (dark 7pm-7am)
 @property BOOL eqOn, keepPitch;
 @property NSString *eqPreset;
 @property NSMutableArray *eqGains;

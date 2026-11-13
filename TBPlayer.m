@@ -21,6 +21,12 @@ typedef struct {
     float z[10][2][2];
 } Ctx;
 static Ctx C;
+static void TBLog(NSString *m) {
+    NSString *p = [TBRoot() stringByAppendingPathComponent:@".data/log.txt"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:p]) [@"" writeToFile:p atomically:NO encoding:NSUTF8StringEncoding error:nil];
+    NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:p]; if (!h) return;
+    [h seekToEndOfFile]; [h writeData:[[m stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding]]; [h closeFile];
+}
 static float RL[RING], RR[RING], TMP[2][4096];
 static AudioUnit OUTU, TPU;
 static pthread_mutex_t M = PTHREAD_MUTEX_INITIALIZER;
@@ -62,6 +68,7 @@ static UInt32 fill(AudioBufferList *io, UInt32 n) {
 static void silence(AudioBufferList *io) { for (UInt32 i = 0; i < io->mNumberBuffers; i++) memset(io->mBuffers[i].mData, 0, io->mBuffers[i].mDataByteSize); }
 
 static OSStatus tpCB(void *r, AudioUnitRenderActionFlags *f, const AudioTimeStamp *t, UInt32 b, UInt32 n, AudioBufferList *io) { fill(io, n); return noErr; }
+
 static OSStatus outCB(void *r, AudioUnitRenderActionFlags *f, const AudioTimeStamp *t, UInt32 b, UInt32 n, AudioBufferList *io) {
     if (!C.playing) { silence(io); *f |= kAudioUnitRenderAction_OutputIsSilence; return noErr; }
     if (C.useTP) { if (AudioUnitRender(TPU, f, t, 0, n, io) != noErr) silence(io); return noErr; }
@@ -137,15 +144,17 @@ static AudioStreamBasicDescription FMT(void) {
     UInt32 mf = 8192;
     AudioUnitSetProperty(OUTU, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitScope_Global, 0, &mf, sizeof mf);
     AudioUnitSetProperty(TPU,  kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitScope_Global, 0, &mf, sizeof mf);
-    AudioUnitSetProperty(OUTU, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof f);
+    OSStatus e1 = AudioUnitSetProperty(OUTU, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof f);
     AURenderCallbackStruct ocb = {outCB, NULL};
-    AudioUnitSetProperty(OUTU, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &ocb, sizeof ocb);
-    AudioUnitInitialize(OUTU);
+    OSStatus e2 = AudioUnitSetProperty(OUTU, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &ocb, sizeof ocb);
+    OSStatus e3 = AudioUnitInitialize(OUTU);
+    TBLog([NSString stringWithFormat:@"setup: out format %d, callback %d, init %d", (int)e1, (int)e2, (int)e3]);
     AudioUnitSetProperty(TPU, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input,  0, &f, sizeof f);
     AudioUnitSetProperty(TPU, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &f, sizeof f);
     AURenderCallbackStruct tcb = {tpCB, NULL};
     AudioUnitSetProperty(TPU, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &tcb, sizeof tcb);
-    AudioUnitInitialize(TPU);
+    OSStatus e4 = AudioUnitInitialize(TPU);
+    TBLog([NSString stringWithFormat:@"setup: timepitch init %d", (int)e4]);
     [NSThread detachNewThreadSelector:@selector(producer) toTarget:self withObject:nil];
     _ready = YES;
 }
@@ -182,7 +191,7 @@ static AudioStreamBasicDescription FMT(void) {
 }
 
 - (void)prime { for (int i = 0; i < 60 && (C.wr - C.rd) < 16384 && !C.eof; i++) usleep(8000); }
-- (void)startOut { if (!_outRunning) { AudioOutputUnitStart(OUTU); _outRunning = YES; } }
+- (void)startOut { if (!_outRunning) { OSStatus e = AudioOutputUnitStart(OUTU); TBLog([NSString stringWithFormat:@"start %d", (int)e]); _outRunning = YES; } }
 - (void)stopOut { if (_outRunning) { AudioOutputUnitStop(OUTU); _outRunning = NO; } }
 
 - (void)play:(NSString *)sid inList:(NSArray *)l { self.list = l ?: @[sid]; [self load:sid]; }
@@ -193,7 +202,8 @@ static AudioStreamBasicDescription FMT(void) {
     [[AVAudioSession sharedInstance] setActive:YES error:nil];
     C.playing = 0; usleep(40000);
     ExtAudioFileRef f;
-    if (ExtAudioFileOpenURL((__bridge CFURLRef)[NSURL fileURLWithPath:[st path:s]], &f) != noErr) return;
+    OSStatus oe = ExtAudioFileOpenURL((__bridge CFURLRef)[NSURL fileURLWithPath:[st path:s]], &f);
+    if (oe != noErr) { TBLog([NSString stringWithFormat:@"open failed %d: %@", (int)oe, [st path:s]]); return; }
     AudioStreamBasicDescription fmt = FMT(), fd; UInt32 sz = sizeof fd;
     ExtAudioFileSetProperty(f, kExtAudioFileProperty_ClientDataFormat, sizeof fmt, &fmt);
     ExtAudioFileGetProperty(f, kExtAudioFileProperty_FileDataFormat, &sz, &fd);
@@ -207,6 +217,7 @@ static AudioStreamBasicDescription FMT(void) {
     _curId = sid;
     [self applyRate]; [self applyEQ]; [self prime];
     C.playing = 1; _playing = YES; [self startOut];
+    TBLog([NSString stringWithFormat:@"play %@ ring=%d eof=%d", s[@"title"], (int)(C.wr - C.rd), (int)C.eof]);
     st.plays[sid] = @([st.plays[sid] intValue] + 1);
     [st.recent removeObject:sid]; [st.recent insertObject:sid atIndex:0];
     while (st.recent.count > 50) [st.recent removeLastObject];

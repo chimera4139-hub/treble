@@ -54,6 +54,7 @@ NSArray *TBPresetGains(NSString *n) {
     self.searches = d[@"searches"] ?: [NSMutableArray array];
     self.secs = [d[@"secs"] doubleValue];
     _uid = [d[@"uid"] intValue];
+    self.theme = [d[@"theme"] intValue]; self.mode = [d[@"mode"] intValue];
     self.impMode = [d[@"impMode"] intValue];
     self.impKind = d[@"impKind"] ?: @"music";
     self.eqOn = d[@"eqOn"] ? [d[@"eqOn"] boolValue] : YES;
@@ -65,7 +66,7 @@ NSArray *TBPresetGains(NSString *n) {
 
 - (void)save {
     NSDictionary *d = @{@"songs":self.songs, @"pls":self.pls, @"queue":self.queue[@"ids"], @"plays":self.plays,
-        @"recent":self.recent, @"searches":self.searches, @"secs":@(self.secs), @"uid":@(_uid), @"impMode":@(self.impMode), @"impKind":self.impKind,
+        @"recent":self.recent, @"searches":self.searches, @"theme":@(self.theme), @"mode":@(self.mode), @"secs":@(self.secs), @"uid":@(_uid), @"impMode":@(self.impMode), @"impKind":self.impKind,
         @"eqOn":@(self.eqOn), @"keep":@(self.keepPitch), @"eqPreset":self.eqPreset, @"eqGains":self.eqGains};
     [d writeToFile:[[self dataDir] stringByAppendingPathComponent:@"state.plist"] atomically:YES];
 }
@@ -184,9 +185,10 @@ NSArray *TBPresetGains(NSString *n) {
         NSMutableSet *known = [NSMutableSet set];
         for (NSDictionary *s in [self.songs allValues]) [known addObject:s[@"path"]];
         NSSet *ext = [NSSet setWithObjects:@"mp3",@"m4a",@"m4b",@"aac",@"wav",@"aif",@"aiff",@"caf",@"mp4",nil];
-        NSMutableArray *files = [NSMutableArray array];
+        NSMutableArray *files = [NSMutableArray array]; NSMutableSet *onDisk = [NSMutableSet set];
+        BOOL inboxOK = [fm fileExistsAtPath:inbox];
         for (NSString *rel in [fm enumeratorAtPath:inbox])
-            if ([ext containsObject:[[rel pathExtension] lowercaseString]] && ![known containsObject:rel]) [files addObject:rel];
+            if ([ext containsObject:[[rel pathExtension] lowercaseString]]) { [onDisk addObject:rel]; if (![known containsObject:rel]) [files addObject:rel]; }
         [files sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
             return [a compare:b options:NSNumericSearch | NSCaseInsensitiveSearch]; }];
         NSMutableArray *fresh = [NSMutableArray array];
@@ -202,7 +204,18 @@ NSArray *TBPresetGains(NSString *n) {
                     [groups[f] addObject:s[@"id"]];
                 }
             }
-            for (NSString *f in order) [self newPlaylistNamed:@"" ids:groups[f] kind:self.impKind];
+            for (NSString *f in order) { NSMutableDictionary *np = [self newPlaylistNamed:@"" ids:groups[f] kind:self.impKind]; np[@"folder"] = f; }
+            // songs whose files were deleted from the Inbox disappear from the library
+            if (inboxOK) {
+                NSMutableArray *gone = [NSMutableArray array];
+                for (NSString *k in self.songs) if (![onDisk containsObject:self.songs[k][@"path"]]) [gone addObject:k];
+                for (NSString *k in gone) {
+                    [self.songs removeObjectForKey:k]; [self.queue[@"ids"] removeObject:k]; [self.recent removeObject:k]; [self.plays removeObjectForKey:k];
+                    for (NSMutableDictionary *p in self.pls) [p[@"ids"] removeObject:k];
+                    [[NSFileManager defaultManager] removeItemAtPath:[[[self dataDir] stringByAppendingPathComponent:@"art"] stringByAppendingPathComponent:[k stringByAppendingString:@".jpg"]] error:nil];
+                }
+                for (NSMutableDictionary *p in [self.pls copy]) if ([p[@"folder"] length] && ![p[@"ids"] count]) [self.pls removeObject:p];
+            }
             [self save];
             [[NSNotificationCenter defaultCenter] postNotificationName:TBChanged object:nil];
         });
