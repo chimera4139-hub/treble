@@ -23,6 +23,7 @@ NSArray *TBPresetGains(NSString *name);
 + (TBStore *)shared;
 - (void)save;
 - (void)scan;
+- (void)purge;
 - (NSDictionary *)song:(NSString *)sid;
 - (NSArray *)allIds;
 - (NSArray *)sorted:(NSArray *)ids by:(NSString *)key;

@@ -2,6 +2,7 @@
 #import "Screens.h"
 #import "TBStore.h"
 #import "TBPlayer.h"
+#import "TBTheme.h"
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
@@ -18,6 +19,7 @@
     return YES;
 }
 - (void)themeTick { TBThemeTick(); }
+- (void)applicationDidReceiveMemoryWarning:(UIApplication *)a { [[TBStore shared] purge]; [TBTheme purge]; }
 - (void)applicationDidBecomeActive:(UIApplication *)a { TBThemeTick(); }
 - (void)applicationDidEnterBackground:(UIApplication *)a { [[TBStore shared] save]; }
 - (void)applicationWillEnterForeground:(UIApplication *)a { [[TBStore shared] scan]; }

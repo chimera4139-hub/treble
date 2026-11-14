@@ -1,6 +1,7 @@
 #import "TBStore.h"
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
+#import <ImageIO/ImageIO.h>
 
 NSString *const TBChanged = @"TBChanged";
 NSString *TBRoot(void) { return @"/var/mobile/Media/Treble"; }
@@ -30,7 +31,7 @@ NSArray *TBPresetGains(NSString *n) {
     return d[n];
 }
 
-@implementation TBStore { NSCache *_cache; int _uid; }
+@implementation TBStore { NSCache *_cache; int _uid; BOOL _scanning; }
 
 + (TBStore *)shared {
     static TBStore *s; static dispatch_once_t o;
@@ -43,7 +44,7 @@ NSArray *TBPresetGains(NSString *n) {
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *d in @[@"Inbox", @".data/art", @".data/covers"])
         [fm createDirectoryAtPath:[TBRoot() stringByAppendingPathComponent:d] withIntermediateDirectories:YES attributes:nil error:nil];
-    _cache = [NSCache new];
+    _cache = [NSCache new]; _cache.countLimit = 200;
     NSData *dt = [NSData dataWithContentsOfFile:[[self dataDir] stringByAppendingPathComponent:@"state.plist"]];
     NSDictionary *d = dt ? [NSPropertyListSerialization propertyListWithData:dt options:NSPropertyListMutableContainersAndLeaves format:NULL error:nil] : nil;
     self.songs  = d[@"songs"]  ?: [NSMutableDictionary dictionary];
@@ -148,7 +149,9 @@ NSArray *TBPresetGains(NSString *n) {
 }
 
 #pragma mark scanning
-- (NSMutableDictionary *)readSong:(NSString *)rel inbox:(NSString *)inbox {
+- (void)purge { [_cache removeAllObjects]; }
+
+- (NSMutableDictionary *)readSong:(NSString *)rel inbox:(NSString *)inbox kind:(NSString *)defKind {
     NSString *sid = [NSString stringWithFormat:@"s%d", __sync_add_and_fetch(&_uid, 1)];
     AVURLAsset *a = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:[inbox stringByAppendingPathComponent:rel]] options:nil];
     NSString *t = nil, *ar = nil, *al = nil; int yr = 0; NSData *art = nil;
@@ -164,49 +167,75 @@ NSArray *TBPresetGains(NSString *n) {
         }
     }
     double dur = CMTimeGetSeconds(a.duration); if (isnan(dur) || dur < 0) dur = 0;
-    UIImage *im = art ? [UIImage imageWithData:art] : nil;
-    if (im) {
-        UIGraphicsBeginImageContextWithOptions(CGSizeMake(60,60), YES, 2);
-        [im drawInRect:CGRectMake(0,0,60,60)];
-        UIImage *sm = UIGraphicsGetImageFromCurrentImageContext(); UIGraphicsEndImageContext();
-        [UIImageJPEGRepresentation(sm, .8) writeToFile:[[[self dataDir] stringByAppendingPathComponent:@"art"] stringByAppendingPathComponent:[sid stringByAppendingString:@".jpg"]] atomically:NO];
+    if (art.length) {   // ImageIO makes a small thumbnail without decoding the full-size cover (big covers ran the iPod out of memory)
+        CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)art, NULL);
+        if (src) {
+            NSDictionary *opt = @{(id)kCGImageSourceCreateThumbnailFromImageAlways:@YES, (id)kCGImageSourceThumbnailMaxPixelSize:@240, (id)kCGImageSourceCreateThumbnailWithTransform:@YES};
+            CGImageRef th = CGImageSourceCreateThumbnailAtIndex(src, 0, (__bridge CFDictionaryRef)opt);
+            if (th) {
+                UIImage *im = [UIImage imageWithCGImage:th]; CGImageRelease(th);
+                if (im.size.width > 0 && im.size.height > 0) {
+                    UIGraphicsBeginImageContextWithOptions(CGSizeMake(60, 60), YES, 2);
+                    CGFloat sc = MAX(60 / im.size.width, 60 / im.size.height), w = im.size.width * sc, h = im.size.height * sc;
+                    [im drawInRect:CGRectMake((60 - w) / 2, (60 - h) / 2, w, h)];
+                    UIImage *sm = UIGraphicsGetImageFromCurrentImageContext(); UIGraphicsEndImageContext();
+                    [UIImageJPEGRepresentation(sm, .8) writeToFile:[[[self dataDir] stringByAppendingPathComponent:@"art"] stringByAppendingPathComponent:[sid stringByAppendingString:@".jpg"]] atomically:NO];
+                }
+            }
+            CFRelease(src);
+        }
     }
     NSString *fn = [[rel lastPathComponent] stringByDeletingPathExtension];
-    NSString *kind = ([[rel pathExtension] caseInsensitiveCompare:@"m4b"] == NSOrderedSame) ? @"book" : self.impKind;
+    NSString *kind = ([[rel pathExtension] caseInsensitiveCompare:@"m4b"] == NSOrderedSame) ? @"book" : defKind;
     return [@{@"id":sid, @"path":rel, @"title":t.length ? t : fn, @"artist":ar.length ? ar : @"Unknown Artist",
         @"album":al.length ? al : @"Unknown Album", @"year":@(yr), @"dur":@(dur),
         @"added":@([[NSDate date] timeIntervalSince1970]), @"kind":kind, @"rate":@1.0} mutableCopy];
 }
 
+- (void)mergeBatch:(NSArray *)batch mode:(int)mode kind:(NSString *)kind groups:(NSMutableDictionary *)fpl {
+    for (NSMutableDictionary *s in batch) {
+        self.songs[s[@"id"]] = s;
+        NSArray *c = [s[@"path"] pathComponents];
+        if (c.count > 1 && mode == 0) {
+            NSString *f = c[0]; NSMutableDictionary *p = fpl[f];
+            if (!p) { p = [self newPlaylistNamed:@"" ids:nil kind:kind]; p[@"folder"] = f; fpl[f] = p; }
+            [p[@"ids"] addObject:s[@"id"]];
+        }
+    }
+    [self save];
+}
+
 - (void)scan {
+    if (_scanning) return;
+    _scanning = YES;
+    NSMutableSet *known = [NSMutableSet set];
+    for (NSDictionary *s in [self.songs allValues]) [known addObject:s[@"path"]];
+    NSString *defKind = self.impKind; int mode = self.impMode; NSMutableDictionary *fpl = [NSMutableDictionary dictionary];
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         NSFileManager *fm = [NSFileManager defaultManager];
         NSString *inbox = [TBRoot() stringByAppendingPathComponent:@"Inbox"];
-        NSMutableSet *known = [NSMutableSet set];
-        for (NSDictionary *s in [self.songs allValues]) [known addObject:s[@"path"]];
         NSSet *ext = [NSSet setWithObjects:@"mp3",@"m4a",@"m4b",@"aac",@"wav",@"aif",@"aiff",@"caf",@"mp4",nil];
         NSMutableArray *files = [NSMutableArray array]; NSMutableSet *onDisk = [NSMutableSet set];
         BOOL inboxOK = [fm fileExistsAtPath:inbox];
-        for (NSString *rel in [fm enumeratorAtPath:inbox])
-            if ([ext containsObject:[[rel pathExtension] lowercaseString]]) { [onDisk addObject:rel]; if (![known containsObject:rel]) [files addObject:rel]; }
-        [files sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
-            return [a compare:b options:NSNumericSearch | NSCaseInsensitiveSearch]; }];
-        NSMutableArray *fresh = [NSMutableArray array];
-        for (NSString *rel in files) [fresh addObject:[self readSong:rel inbox:inbox]];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            NSMutableDictionary *groups = [NSMutableDictionary dictionary]; NSMutableArray *order = [NSMutableArray array];
-            for (NSMutableDictionary *s in fresh) {
-                self.songs[s[@"id"]] = s;
-                NSArray *c = [s[@"path"] pathComponents];
-                if (c.count > 1 && self.impMode == 0) {
-                    NSString *f = c[0];
-                    if (!groups[f]) { groups[f] = [NSMutableArray array]; [order addObject:f]; }
-                    [groups[f] addObject:s[@"id"]];
-                }
+        @autoreleasepool {
+            for (NSString *rel in [fm enumeratorAtPath:inbox])
+                if ([ext containsObject:[[rel pathExtension] lowercaseString]]) { [onDisk addObject:rel]; if (![known containsObject:rel]) [files addObject:rel]; }
+        }
+        [files sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) { return [a compare:b options:NSNumericSearch | NSCaseInsensitiveSearch]; }];
+        NSUInteger total = files.count;
+        for (NSUInteger off = 0; off < total; off += 12) {
+            NSMutableArray *batch = [NSMutableArray array];
+            @autoreleasepool {
+                for (NSUInteger i = off; i < MIN(off + 12, total); i++) { @autoreleasepool { [batch addObject:[self readSong:files[i] inbox:inbox kind:defKind]]; } }
             }
-            for (NSString *f in order) { NSMutableDictionary *np = [self newPlaylistNamed:@"" ids:groups[f] kind:self.impKind]; np[@"folder"] = f; }
-            // songs whose files were deleted from the Inbox disappear from the library
-            if (inboxOK) {
+            NSString *msg = [NSString stringWithFormat:@"Importing %d / %d…", (int)MIN(off + 12, total), (int)total];
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                [self mergeBatch:batch mode:mode kind:defKind groups:fpl];
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"TBScanProgress" object:msg];
+            });
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (inboxOK) {   // songs whose files were deleted from the Inbox disappear from the library
                 NSMutableArray *gone = [NSMutableArray array];
                 for (NSString *k in self.songs) if (![onDisk containsObject:self.songs[k][@"path"]]) [gone addObject:k];
                 for (NSString *k in gone) {
@@ -216,7 +245,9 @@ NSArray *TBPresetGains(NSString *n) {
                 }
                 for (NSMutableDictionary *p in [self.pls copy]) if ([p[@"folder"] length] && ![p[@"ids"] count]) [self.pls removeObject:p];
             }
+            self->_scanning = NO;
             [self save];
+            if (total) [[NSNotificationCenter defaultCenter] postNotificationName:@"TBScanProgress" object:[NSString stringWithFormat:@"Imported %d songs", (int)total]];
             [[NSNotificationCenter defaultCenter] postNotificationName:TBChanged object:nil];
         });
     });

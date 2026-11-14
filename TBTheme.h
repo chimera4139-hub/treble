@@ -14,6 +14,7 @@
 + (void)reload;
 + (NSArray *)names;
 + (NSArray *)modeNames;
++ (void)purge;
 + (UIImage *)solid:(UIColor *)c;
 + (UIImage *)vinyl:(CGFloat)s;
 - (UIColor *)bgColor;                       // pattern (wood) or plain

@@ -21,7 +21,8 @@ static UIFont *F(NSString *n, CGFloat s, BOOL bold) {
 #pragma mark helpers
 void TBToast(NSString *m) {
     UIWindow *w = [UIApplication sharedApplication].keyWindow;
-    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(30, 70, 260, 30)];
+    [[w viewWithTag:9191] removeFromSuperview];
+    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(30, 70, 260, 30)]; l.tag = 9191;
     l.text = m; l.textAlignment = NSTextAlignmentCenter; l.textColor = [UIColor whiteColor];
     l.backgroundColor = [UIColor colorWithWhite:0 alpha:.8]; l.font = [UIFont systemFontOfSize:13];
     l.layer.cornerRadius = 8; l.clipsToBounds = YES; [w addSubview:l];
@@ -115,10 +116,10 @@ static void SleepSheet(void) {
 }
 static void ThemeSheet(void) {
     NSMutableArray *n = [NSMutableArray array]; for (NSString *x in [TBTheme names]) [n addObject:x];
-    Sheet(@"Theme", n, ^(NSInteger i) { ST.theme = (int)i; [ST save]; TBApplyTheme(YES); });
+    Sheet(@"Theme", n, ^(NSInteger i) { ST.theme = (int)i; [ST save]; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ TBApplyTheme(YES); }); });
 }
 static void ModeSheet(void) {
-    Sheet(@"Light / Dark", @[@"Light", @"Dark", @"Auto (dark 7pm–7am)"], ^(NSInteger i) { ST.mode = (int)i; [ST save]; TBApplyTheme(YES); });
+    Sheet(@"Light / Dark", @[@"Light", @"Dark", @"Auto (dark 7pm–7am)"], ^(NSInteger i) { ST.mode = (int)i; [ST save]; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ TBApplyTheme(YES); }); });
 }
 
 static void SongMenu(NSString *sid) {
@@ -843,7 +844,9 @@ static void SongMenu(NSString *sid) {
     [_spd addTarget:self action:@selector(speedMenu) forControlEvents:UIControlEventTouchUpInside]; [self.view addSubview:_spd];
     [self sync]; _tm = [NSTimer scheduledTimerWithTimeInterval:.5 target:self selector:@selector(tick) userInfo:nil repeats:YES];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sync) name:TBPlayerChanged object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(teardown) name:@"TBTeardown" object:nil];
 }
+- (void)teardown { [_tm invalidate]; _tm = nil; }
 - (void)spin:(BOOL)on {
     CALayer *l = _wrap.layer;
     if (!l.animationKeys.count) {
@@ -914,6 +917,8 @@ static UIImage *Icon(int k, UIColor *col) {
     [self.view addSubview:_mini];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(updMini) name:TBPlayerChanged object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(showQueue) name:@"TBShowQueue" object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(teardown) name:@"TBTeardown" object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(scanProgress:) name:@"TBScanProgress" object:nil];
     _mt = [NSTimer scheduledTimerWithTimeInterval:.5 target:self selector:@selector(progress) userInfo:nil repeats:YES];
     [self updMini];
 }
@@ -959,6 +964,8 @@ static UIImage *Icon(int k, UIColor *col) {
         default: break;
     }
 }
+- (void)teardown { [_mt invalidate]; _mt = nil; [[NSNotificationCenter defaultCenter] removeObserver:self]; }
+- (void)scanProgress:(NSNotification *)n { if ([n.object isKindOfClass:[NSString class]]) TBToast(n.object); }
 - (void)dealloc { [_mt invalidate]; [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 @end
 
@@ -992,10 +999,16 @@ UITabBarController *TBMakeTabs(void) {
 void TBApplyTheme(BOOL fromSettings) {
     UIWindow *w = [UIApplication sharedApplication].keyWindow;
     UITabBarController *old = (UITabBarController *)w.rootViewController; NSUInteger sel = [old isKindOfClass:[UITabBarController class]] ? old.selectedIndex : 0;
-    [TBTheme reload]; [[TBTheme cur] applyAppearance];
+    UIGraphicsBeginImageContextWithOptions(w.bounds.size, YES, 0); [w.layer renderInContext:UIGraphicsGetCurrentContext()];
+    UIImage *snap = UIGraphicsGetImageFromCurrentImageContext(); UIGraphicsEndImageContext();
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"TBTeardown" object:nil];   // stop timers/observers of the old screens so they can be freed
+    if (old.presentedViewController) [old dismissViewControllerAnimated:NO completion:nil];
+    [TBTheme reload]; [[TBTheme cur] applyAppearance]; [TBTheme purge];
     UITabBarController *nt = TBMakeTabs(); nt.selectedIndex = fromSettings ? 4 : sel;
-    [UIView transitionWithView:w duration:.35 options:UIViewAnimationOptionTransitionCrossDissolve animations:^{ w.rootViewController = nt; } completion:nil];
+    w.rootViewController = nt;
     if (fromSettings) { UINavigationController *n = (UINavigationController *)nt.selectedViewController; [n pushViewController:[SettingsVC new] animated:NO]; }
+    UIImageView *ov = [[UIImageView alloc] initWithImage:snap]; [w addSubview:ov];
+    [UIView animateWithDuration:.35 animations:^{ ov.alpha = 0; } completion:^(BOOL f) { [ov removeFromSuperview]; }];
 }
 void TBThemeTick(void) {
     if (ST.mode != 2) return;

@@ -7,6 +7,7 @@
 #define WH(w) [UIColor colorWithWhite:(w) alpha:1]
 
 static TBTheme *gCur;
+static NSCache *gArt;
 
 #pragma mark image helpers
 static UIImage *Grad(CGSize sz, UIColor *a, UIColor *b, UIColor *line, BOOL lineTop) {
@@ -50,6 +51,7 @@ static UIImage *Wood(BOOL dark) {
     if (s.mode == 2) { NSInteger h = [[NSCalendar currentCalendar] components:NSHourCalendarUnit fromDate:[NSDate date]].hour; dark = (h >= 19 || h < 7); }
     gCur = [self make:s.theme dark:dark];
 }
++ (void)purge { [gArt removeAllObjects]; }
 + (UIImage *)solid:(UIColor *)c { return Grad(CGSizeMake(4, 4), c, c, nil, NO); }
 + (UIImage *)vinyl:(CGFloat)S {
     UIGraphicsBeginImageContextWithOptions(CGSizeMake(S, S), NO, 0); CGContextRef c = UIGraphicsGetCurrentContext();
@@ -182,9 +184,9 @@ static UIImage *Wood(BOOL dark) {
 #pragma mark artwork
 - (UIImage *)art:(UIImage *)src {
     if (!src || _kind == 0) return src;
-    static NSCache *cache; if (!cache) cache = [NSCache new];
+    if (!gArt) { gArt = [NSCache new]; gArt.countLimit = 120; }
     NSString *key = [NSString stringWithFormat:@"%p|%d|%d", (__bridge void *)src, _kind, _dark];
-    UIImage *hit = [cache objectForKey:key]; if (hit) return hit;
+    UIImage *hit = [gArt objectForKey:key]; if (hit) return hit;
     CGFloat s = _artSize, p = _artPad; CGRect r = CGRectMake(p, 0, s, s);
     UIGraphicsBeginImageContextWithOptions(CGSizeMake(p + s, s), NO, 0); CGContextRef c = UIGraphicsGetCurrentContext();
     CGContextSaveGState(c);
@@ -200,7 +202,7 @@ static UIImage *Wood(BOOL dark) {
         [RGB(30, 20, 10) setFill]; CGContextFillEllipseInRect(c, CGRectMake(m.x - 2.5, m.y - 2.5, 5, 5));
     }
     UIImage *im = UIGraphicsGetImageFromCurrentImageContext(); UIGraphicsEndImageContext();
-    [cache setObject:im forKey:key]; return im;
+    [gArt setObject:im forKey:key]; return im;
 }
 
 #pragma mark cells / headers
@@ -283,10 +285,11 @@ static UIImage *Wood(BOOL dark) {
 
 #pragma mark bars
 - (UIImage *)tabBgImage { return Grad(CGSizeMake(4, 49), _tabA, _tabB, _kind == 3 ? RGB(201, 162, 75) : (_kind == 1 ? _navLine : nil), YES); }
-- (UIImage *)tabSelImage {
-    if (_kind == 4) return [[TBTheme solid:_accent] resizableImageWithCapInsets:UIEdgeInsetsZero];
-    if (_kind == 3) return [[TBTheme solid:RGBA(255, 176, 32, .20)] resizableImageWithCapInsets:UIEdgeInsetsZero];
-    return [[TBTheme solid:[UIColor clearColor]] resizableImageWithCapInsets:UIEdgeInsetsZero];
+- (UIImage *)tabSelImage {   // iOS draws this at its own size inside each tab, so it must be exactly one tab wide (320/5 = 64)
+    CGSize sz = CGSizeMake(64, 49);
+    if (_kind == 4) return Grad(sz, _accent, _accent, nil, NO);
+    if (_kind == 3) { UIColor *g = RGBA(255, 176, 32, .20); return Grad(sz, g, g, nil, NO); }
+    UIColor *c = [UIColor clearColor]; return Grad(sz, c, c, nil, NO);
 }
 - (UIImage *)fieldImage {
     CGFloat r = _kind == 4 ? 0 : (_kind == 3 ? 6 : 14);
