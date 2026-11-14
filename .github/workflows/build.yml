@@ -5,14 +5,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Make icons
-        run: |
-          mkdir -p Resources
-          python3 -c "import base64;open('Resources/icon.png','wb').write(base64.b64decode(open('icon57.b64').read()))"
-          python3 -c "import base64;open('Resources/icon@2x.png','wb').write(base64.b64decode(open('icon114.b64').read()))"
-          python3 -c "import re;p='Resources/Info.plist';s=open(p).read();open(p,'w').write(re.sub(r'(<key>UIPrerenderedIcon</key>\\s*)<true/>',r'\\1<false/>',s))"
-          grep -A1 UIPrerenderedIcon Resources/Info.plist
-          ls -la Resources
+      - name: Make icons and Info.plist
+        run: python3 prepare.py
       - name: Install Theos
         run: |
           brew install ldid dpkg
